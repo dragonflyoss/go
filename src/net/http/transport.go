@@ -1930,6 +1930,27 @@ func (pc *persistConn) Read(p []byte) (n int, err error) {
 	return
 }
 
+func (pc *persistConn) WriteTo(w io.Writer) (n int64, err error) {
+	if pc.readLimit <= 0 {
+		return 0, fmt.Errorf("read limit of %d bytes exhausted", pc.maxHeaderResponseSize())
+	}
+
+	if lw, ok := w.(*io.LimitedWriter); ok {
+		if int64(lw.N) > pc.readLimit {
+			lw.N = pc.readLimit
+		}
+		if c, ok := pc.conn.(io.WriterTo); ok {
+			n, err = c.WriteTo(w)
+			if err == io.EOF {
+				pc.sawEOF = true
+			}
+			pc.readLimit -= int64(n)
+			return n, err
+		}
+	}
+	return io.Copy(w, readerOnly{pc})
+}
+
 // isBroken reports whether this connection is in a known broken state.
 func (pc *persistConn) isBroken() bool {
 	pc.mu.Lock()
@@ -2774,6 +2795,34 @@ func (es *bodyEOFSignal) Read(p []byte) (n int, err error) {
 		err = es.condfn(err)
 	}
 	return
+}
+
+// readerOnly hides an io.Reader value's optional WriteTo method
+// from io.Copy.
+type readerOnly struct {
+	io.Reader
+}
+
+func (es *bodyEOFSignal) WriteTo(w io.Writer) (n int64, err error) {
+	// only care about os.File, if not, skip
+	if _, ok := w.(*os.File); !ok {
+		return io.Copy(w, readerOnly{es})
+	}
+	if b, ok := es.body.(*body); ok {
+		// only support *io.LimitedReader for explicit length
+		// normally, if a http response has ContentLength header, b.src is always a io.LimitedReader
+		// we will transfer *io.LimitedReader to *io.LimitedWriter
+		if lr, ok := b.src.(*io.LimitedReader); ok {
+			if br, ok := lr.R.(*bufio.Reader); ok {
+				// normally, bufio.Reader.rd is persistConn, persistConn implements WriteTo
+				// bufio.Reader will call persistConn.WriteTo
+				// then persistConn.WriteTo will call persistConn.conn.WriteTo
+				// persistConn.conn will detect underlay of w to use high efficiency syscall
+				return br.WriteTo(io.LimitWriter(w, lr.N))
+			}
+		}
+	}
+	return io.Copy(w, readerOnly{es})
 }
 
 func (es *bodyEOFSignal) Close() error {
