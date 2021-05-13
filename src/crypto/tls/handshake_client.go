@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -369,6 +370,8 @@ func (c *Conn) pickTLSVersion(serverHello *serverHelloMsg) error {
 // Does the handshake, either a full one or resumes old session. Requires hs.c,
 // hs.hello, hs.serverHello, and, optionally, hs.session to be set.
 func (hs *clientHandshakeState) handshake() error {
+	log.Println("start to client handshake")
+
 	c := hs.c
 
 	isResume, err := hs.processServerHello()
@@ -441,6 +444,10 @@ func (hs *clientHandshakeState) handshake() error {
 
 	c.ekm = ekmFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.hello.random, hs.serverHello.random)
 	atomic.StoreUint32(&c.handshakeStatus, 1)
+
+	if err := c.enableKernelTLS(c.cipherSuite, c.in.key, c.out.key, c.in.iv, c.out.iv); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -659,6 +666,8 @@ func (hs *clientHandshakeState) establishKeys() error {
 		serverCipher = hs.suite.aead(serverKey, serverIV)
 	}
 
+	c.in.key, c.in.iv = serverKey, serverIV
+	c.out.key, c.out.iv = clientKey, clientIV
 	c.in.prepareCipherSpec(c.vers, serverCipher, serverHash)
 	c.out.prepareCipherSpec(c.vers, clientCipher, clientHash)
 	return nil

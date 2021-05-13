@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log"
 	"sync/atomic"
 	"time"
 )
@@ -61,6 +62,7 @@ func (c *Conn) serverHandshake() error {
 func (hs *serverHandshakeState) handshake() error {
 	c := hs.c
 
+	log.Println("start to server handshake")
 	if err := hs.processClientHello(); err != nil {
 		return err
 	}
@@ -119,6 +121,10 @@ func (hs *serverHandshakeState) handshake() error {
 
 	c.ekm = ekmFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.clientHello.random, hs.hello.random)
 	atomic.StoreUint32(&c.handshakeStatus, 1)
+
+	if err := c.enableKernelTLS(c.cipherSuite, c.in.key, c.out.key, c.in.iv, c.out.iv); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -668,6 +674,8 @@ func (hs *serverHandshakeState) establishKeys() error {
 		serverCipher = hs.suite.aead(serverKey, serverIV)
 	}
 
+	c.in.key, c.in.iv = clientKey, clientIV
+	c.out.key, c.out.iv = serverKey, serverIV
 	c.in.prepareCipherSpec(c.vers, clientCipher, clientHash)
 	c.out.prepareCipherSpec(c.vers, serverCipher, serverHash)
 
